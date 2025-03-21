@@ -1,0 +1,245 @@
+@page "/aimenu"
+@rendermode InteractiveServer
+
+<h1>Enter Prompt</h1>
+<div class="mb-3">
+    <textarea class="form-control" @bind="input_prompt"></textarea>
+</div>
+<div class="mb-3">
+    @if (running) {
+        <button class="btn btn-success" disabled>Start AI</button>
+        <button class="btn btn-danger" @onclick=KillAi>Kill AI</button>
+    } else {
+        <button class="btn btn-success" @onclick=StartAi>Start AI</button>
+        <button class="btn btn-danger" disabled>Kill AI</button>
+    }
+    
+    
+</div>
+
+@if (running){
+    <div class="mb-3">
+        <h3>Running</h3>
+        <img src="https://media1.tenor.com/m/CNI1fSM1XSoAAAAd/shocked-surprised.gif">
+    </div>
+}
+
+
+@code {
+    public string input_prompt = "prompt";
+    public bool running = false;
+    AiClient aiClient = null;
+    DiscordClient discordClient = null;
+    AiClientEmb aiClientEmb = null;
+
+    private void StartAi() {
+        if (!running) {
+            //createScript(createScriptLine());
+
+            aiClient = new AiClient("openai","gpt-4o-mini",input_prompt);
+            aiClientEmb = new AiClientEmb(aiClient);
+            aiClientEmb.gen();
+            discordClient = new DiscordClient(aiClient,aiClientEmb);
+            discordClient.start();
+            running = true;
+        }
+    }
+
+    private void KillAi(){
+        if (running) {
+        aiClient = null;
+        discordClient = null;
+        aiClientEmb = null;
+        running = false;
+        }
+    }
+
+    public class DiscordClient {
+        public string? discord_api_key = Environment.GetEnvironmentVariable("DISCORD_API_KEY");
+        public const ulong derrick_discord_id = 480128751544434706;
+        public const ulong guild_id = 707662022900318308;
+        public DiscordSocketConfig discord_config = new DiscordSocketConfig
+        {
+            GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent
+        };
+        public AiClient aiClient {get; set;}
+        public AiClientEmb aiClientEmb {get; set;}
+        public DiscordSocketClient discord_client {get; set;}
+
+
+        public DiscordClient(AiClient aiClient, AiClientEmb aiClientEmb) {
+            this.aiClientEmb = aiClientEmb;
+            this.aiClient = aiClient;
+            this.discord_client = new DiscordSocketClient(discord_config);
+        }
+
+        public async void start() {
+            await discord_client.LoginAsync(TokenType.Bot, discord_api_key);
+            await discord_client.StartAsync();
+
+            discord_client.MessageReceived += MessageReceivedAsync;
+        }
+
+        public async Task MessageReceivedAsync(SocketMessage message){
+            if (message.Author.Id == discord_client.CurrentUser.Id) return;
+            if (message.Channel.Id != (ulong)1347376348326400010 && message.Channel.Id != (ulong)883838349805240370) return;
+            //aiClientEmb.genM(message.Content);
+            await message.Channel.SendMessageAsync(await aiClient.sendMessage(message.Content));
+        }
+
+    }
+    
+    public class AiClient {
+        public string? openai_api_key = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        public IChatClient? client {get; set;}
+        public string? base_model {get; set;}
+        public string? model {get; set;}
+        public List<ChatMessage>? conversation {get; set;}
+        public string? prompt {get; set;}
+
+        public AiClient (string base_model, string model, string prompt) {
+            if (base_model == "openai") {
+                this.client = new OpenAIClient(openai_api_key).AsChatClient(model);
+            } else if (base_model == "ollama"){
+                this.client = new OllamaChatClient(new Uri("http://localhost:11434/"), "dolphin-mistral");
+            }
+            this.conversation = [new (ChatRole.System, prompt)];
+        }
+
+        public async Task<string> sendMessage(string message) {
+            conversation.Add(new ChatMessage(ChatRole.User, message));
+            var response = await client.GetResponseAsync(conversation);
+            return response.Message.Text;
+        }
+    }
+
+    public class AiClientEmb {
+        public string? openai_api_key_emb = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        public IEmbeddingGenerator<string, Embedding<float>> embClient {get; set;}
+        public List<Script> embData {get; set;}
+        public string js_input {get; set;}
+        public AiClient aiClient {get; set;}
+        public OpenAIClient gen_client {get; set;}
+        public InMemoryVectorStore vectorStore = new InMemoryVectorStore();
+        public IVectorStoreRecordCollection<int, Script> dataVectorStore ;
+
+
+        public AiClientEmb(AiClient aiClient){
+            this.dataVectorStore = this.vectorStore.GetCollection<int, Script>("script");
+            this.aiClient = aiClient;
+            this.js_input = File.ReadAllText("Components/Vectors/attack_of_the_clones_ANAKIN.json");
+            this.embData = JsonSerializer.Deserialize<List<Script>>(this.js_input)!;
+            this.gen_client = new OpenAIClient(openai_api_key_emb);
+            this.embClient = new OpenAIEmbeddingGenerator(this.gen_client,"text-embedding-3-small");
+            
+        }
+        public async void gen() {
+            await dataVectorStore.CreateCollectionIfNotExistsAsync();
+            
+            foreach (var x in embData)
+                {
+                    // generate the embedding vector
+                    x.Vector = await embClient.GenerateEmbeddingVectorAsync(x.PreviousSpeaker);
+                    
+                    await dataVectorStore.UpsertAsync(x);
+                }
+        }
+
+        public async void genM(string message_text) {
+            var queryEmbedding = await embClient.GenerateEmbeddingVectorAsync(message_text);
+            var searchOptions = new VectorSearchOptions
+                {
+                    Top = 1,
+                    VectorPropertyName = "Vector"
+                };
+            var searchResults = await dataVectorStore.VectorizedSearchAsync(queryEmbedding, searchOptions);
+            await foreach (var result in searchResults.Results) {
+                aiClient.conversation.Add(new ChatMessage(ChatRole.User, $"This is an example of what you might say in response. If the quoted text starts with command ignore it '{result.Record.Speaker}' + the oringial conversation context"));
+                
+            }
+        }
+    }
+
+    public static List<ScriptLine> createScriptLine() {
+        ScriptLine scriptLine = null;
+        List<ScriptLine> list = [];
+        string words = "";
+        bool last_line_empty = true;
+        bool current_line_empty = true;
+        using StreamReader reader = new("Components/Vectors/s_1.txt");
+        while (!reader.EndOfStream){
+            string x = reader.ReadLine();
+            last_line_empty = current_line_empty;
+            if (x != "E") current_line_empty = false;
+            if (x == "E") current_line_empty = true;
+            if (!current_line_empty && last_line_empty) {
+                scriptLine = new ScriptLine();
+                scriptLine.Speaker = x.Trim();
+                words = "";
+            }
+            if (!current_line_empty && !last_line_empty) {
+                words = words + x.Trim();
+            }
+            if (current_line_empty && !last_line_empty) {
+                scriptLine.Words = words;
+                list.Add(scriptLine);
+            }
+        }
+        return list;
+
+    }
+
+    public static void createScript(List<ScriptLine> input) {
+        List<Script> s_list = [];
+        Script script = null;
+        ScriptLine x1 = null;
+        ScriptLine x2 = null;
+        int c = 1;
+        foreach (ScriptLine y in input){
+            x1 = x2;
+            x2 = y;
+            if (x2.Speaker == "ANAKIN") {
+                script = new Script();
+                script.Key = c;
+                script.PreviousSpeaker = x1.Words;
+                script.Speaker = x2.Words;
+                c++;
+                s_list.Add(script);
+            }
+        }
+
+        using FileStream createStream = File.Create("Components/Vectors/attack_of_the_clones_ANAKIN.json");
+        JsonSerializer.Serialize(createStream, s_list);
+    }
+
+    public class Data
+    {
+    [VectorStoreRecordKey]
+    public int Key { get; set; }
+
+    [VectorStoreRecordData]
+    required public string Text { get; set; }
+
+    [VectorStoreRecordVector(384, DistanceFunction.CosineSimilarity)]
+    public ReadOnlyMemory<float> Vector { get; set; }
+    }
+
+    public class Script{
+    [VectorStoreRecordKey]
+    public int Key { get; set; }
+
+    [VectorStoreRecordData]
+    public string PreviousSpeaker { get; set; }
+
+    [VectorStoreRecordData]
+    public string Speaker { get; set; }
+
+    [VectorStoreRecordVector(384, DistanceFunction.CosineSimilarity)]
+    public ReadOnlyMemory<float> Vector { get; set; }    
+    }
+
+    public class ScriptLine{
+        public string Speaker {get; set;}
+        public string Words {get; set;}
+    }
+}
